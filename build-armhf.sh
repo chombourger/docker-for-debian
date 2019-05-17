@@ -1,6 +1,6 @@
 #!/bin/bash
 #---------------------------------------------------------------------------------------------------
-# Build docker-ce for Debian/arm64
+# Build docker-ce for Debian/armhf
 #---------------------------------------------------------------------------------------------------
 
 source build-defaults.conf
@@ -9,18 +9,17 @@ source build-defaults.conf
 # Build settings
 #---------------------------------------------------------------------------------------------------
 
-ARCH=arm64
+ARCH=armhf
 CONSOLE=ttyAMA0
-CPU=cortex-a57
-QEMU=qemu-system-aarch64
-EXTRA_PACKAGES="linux-headers-${ARCH}"
+QEMU=qemu-system-arm
+EXTRA_PACKAGES="linux-headers-armmp"
 
 #---------------------------------------------------------------------------------------------------
 # Debian installer
 #---------------------------------------------------------------------------------------------------
 
-DI_PATH=main/installer-${ARCH}/current/images/netboot/debian-installer/${ARCH}
-DI_KERNEL=linux
+DI_PATH=main/installer-${ARCH}/current/images/netboot
+DI_KERNEL=vmlinuz
 DI_INITRD=initrd.gz
 
 #---------------------------------------------------------------------------------------------------
