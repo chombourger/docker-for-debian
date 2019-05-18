@@ -31,8 +31,17 @@ SSH_USER=mel
 #---------------------------------------------------------------------------------------------------
 
 DISK_IMAGE=disk.qcow2
-DISK_PATH=tmp/work/${ARCH}/debian-stretch
+DISK_PATH=tmp/work/${ARCH}/debian-${DISTRO}
 DISK_SIZE=10G
+
+#---------------------------------------------------------------------------------------------------
+# Local settings
+#---------------------------------------------------------------------------------------------------
+
+if [ -f local.conf ]; then
+    info "loading local.conf"
+    source local.conf
+fi
 
 #---------------------------------------------------------------------------------------------------
 # Utility functions
@@ -40,7 +49,11 @@ DISK_SIZE=10G
 
 # Print an info message to the console
 info() {
-    echo "# info: ${*}"
+    local mins
+
+    mins=$(awk "BEGIN { print $SECONDS / 60; }")
+    mins=$(printf "%0.2f" "${mins}")
+    printf "\r[${mins}] ${*}"
 }
 
 # Run a command in the build vm
@@ -68,20 +81,19 @@ ssh_check() {
 ssh_wait() {
     local result counter
 
-    printf "# info: waiting for ssh server to be up"
 
     counter=${SSH_DELAY}
     while [ ${counter} -gt 0 ]; do
+        info "waiting for ssh server to be up..."
         sleep 1
-        printf "."
         counter=$((${counter} - 1))
     done
 
     counter=${SSH_TRIES}
     while [ ${counter} -gt 0 ]; do
+        info "trying to connect to build vm via ssh..."
         ssh_check; result=${?}
         [ ${result} -eq 0 ] && break
-        printf "."
         counter=$((${counter} - 1))
     done
 
@@ -117,6 +129,7 @@ install_build_host_deps() {
         curl                  \
         nbd-client            \
         qemu-system           \
+        reprepro              \
         sshpass               \
         wget
 }
@@ -134,14 +147,14 @@ cpuopt=""
 
 result=0
 
-info "installing host dependencies"
+info "installing host dependencies\n"
 install_build_host_deps; result=${?}
 
 if [ ${result} -eq 0 ]; then
-    info "checking latest docker-ce build..."
+    info "checking latest docker-ce build...\n"
     latest=$(curl -s ${DOCKER_REPO}/releases/latest|sed -e 's,.*<a href=",,g'|cut -d '"' -f1)
     latest=$(basename ${latest})
-    info "upstream version is ${latest}"
+    info "upstream version is ${latest}\n"
 fi
 
 # work directory for the installer
@@ -149,8 +162,8 @@ D=$(echo ${DEBIAN_VERSION}|tr '[:upper:]' '[:lower:]')-installer
 WORKDIR=tmp/work/${ARCH}/${D}
 
 if [ ${result} -eq 0 ]; then
-    if [ ! -e ${WORKDIR}/initrd.gz ] || [ ! -e ${WORKDIR}/linux ]; then
-        info "getting ${ARCH} kernel and ramdisk"
+    if [ ! -e ${WORKDIR}/${DI_INITRD} ] || [ ! -e ${WORKDIR}/${DI_KERNEL} ]; then
+        info "getting ${ARCH} kernel and ramdisk\n"
         url=${DEBIAN_BASE_URL}/${DEBIAN_VERSION}/${DI_PATH}
         mkdir -p ${WORKDIR} && \
         pushd ${WORKDIR} >/dev/null && \
@@ -163,7 +176,7 @@ fi
 
 # Copy preseed file to local web server
 if [ ${result} -eq 0 ]; then
-    info "copying preseed to ${WWW_DIR}"
+    info "copying preseed to ${WWW_DIR}\n"
     sudo install -m 644 preseed.cfg ${WWW_DIR}/
     result=${?}
 fi
@@ -171,7 +184,7 @@ fi
 # Create (empty) disk image
 if [ ${result} -eq 0 ]; then
     if [ ! -e ${DISK_PATH}/${DISK_IMAGE} ]; then
-        info "creating ${DISK_SIZE} disk image"
+        info "creating ${DISK_SIZE} disk image\n"
         mkdir -p ${DISK_PATH} && \
         qemu-img create -f qcow2 ${DISK_PATH}/${DISK_IMAGE} ${DISK_SIZE} >/dev/null
         result=${?}
@@ -181,7 +194,7 @@ fi
 # Install Debian to the disk image
 if [ ${result} -eq 0 ]; then
     if [ ! -e ${DISK_PATH}/install.done ]; then
-        info "installing Debian for ${ARCH}..."
+        info "installing Debian for ${ARCH}...\n"
         bootcmd="root=/dev/ram console=${CONSOLE}"
         bootcmd="${bootcmd} auto=true priority=critical preseed/url=${WWW_PRESEED}"
         ${QEMU} \
@@ -210,7 +223,7 @@ fi
 # Extract kernel/initrd from disk
 if [ ${result} -eq 0 ]; then
     if [ ! -e ${DISK_PATH}/initrd.img ] || [ ! -e ${DISK_PATH}/vmlinuz ]; then
-        info "extracting installed kernel and ramdisk"
+        info "extracting installed kernel and ramdisk\n"
         sudo modprobe nbd max_part=8 && \
         sudo qemu-nbd --connect=/dev/nbd0 ${DISK_PATH}/${DISK_IMAGE} && \
         sudo partprobe /dev/nbd0 && \
@@ -224,11 +237,11 @@ fi
 # Flush data and release I/O devices
 sync
 if mountpoint -q ${DISK_PATH}/mnt; then
-    info "un-mounting disk image"
+    info "un-mounting disk image\n"
     sudo umount /dev/nbd0p1
 fi
 if sudo nbd-client -c /dev/nbd0; then
-    info "releasing network block device"
+    info "releasing network block device\n"
     sudo nbd-client -d /dev/nbd0
 fi
 
@@ -244,7 +257,7 @@ fi
 # Boot installed system
 qemu_pid=
 if [ ${result} -eq 0 ]; then
-    info "booting installed ${ARCH} system..."
+    info "booting installed ${ARCH} system...\n"
     ${QEMU} \
         -smp ${CORES} -M virt ${cpuopt} -m ${MEM} \
         -initrd ${DISK_PATH}/initrd.img -kernel ${DISK_PATH}/vmlinuz \
@@ -278,7 +291,7 @@ else
 fi
 
 if [ ${result} -eq 0 ]; then
-    info "install packages to support https package feeds..."
+    info "install packages to support https package feeds...\n"
     ssh_sudo apt-get -qqy install \
         apt-transport-https \
         ca-certificates \
@@ -289,65 +302,65 @@ if [ ${result} -eq 0 ]; then
 fi
 
 if [ ${result} -eq 0 ]; then
-    info "get docker’s official GPG key"
+    info "get docker’s official GPG key\n"
     ssh_cmd curl -fsSL -o docker.gpg https://download.docker.com/linux/debian/gpg
     result=${?}
 fi
 
 if [ ${result} -eq 0 ]; then
-    info "adding docker's key..."
+    info "adding docker's key...\n"
     ssh_sudo 'apt-key add docker.gpg >/dev/null'
     result=${?}
 fi
 
 if [ ${result} -eq 0 ]; then
-    info "adding docker's package feed..."
-    ssh_cmd  'echo deb https://download.docker.com/linux/debian stretch stable>docker.list' && \
-    ssh_sudo 'cp docker.list /etc/apt/sources.list.d/'
+    info "adding docker's package feed...\n"
+    ssh_cmd  "echo deb https://download.docker.com/linux/debian ${DISTRO} stable>docker.list" && \
+    ssh_sudo "cp docker.list /etc/apt/sources.list.d/"
     result=${?}
 fi
 
 if [ ${result} -eq 0 ]; then
-    info "updating package database..."
+    info "updating package database...\n"
     ssh_sudo "apt-get -qqy update"
     result=${?}
 fi
 
 if [ ${result} -eq 0 ]; then
-    info "installing docker-ce..."
+    info "installing docker-ce...\n"
     ssh_sudo "apt-get -qqy install docker-ce docker-ce-cli containerd.io ${EXTRA_PACKAGES}"
     result=${?}
 fi
 
 if [ ${result} -eq 0 ]; then
-    info "copying docker's daemon configuration file..."
+    info "copying docker's daemon configuration file...\n"
     ssh_copy_to daemon.json && \
     ssh_sudo 'cp daemon.json /etc/docker/'
     result=${?}
 fi
 
 if [ ${result} -eq 0 ]; then
-    info "restarting docker..."
+    info "restarting docker...\n"
     ssh_sudo 'systemctl restart docker'
     result=${?}
 fi
 
 if [ ${result} -eq 0 ]; then
-    info "getting sources (${latest})..."
-    ssh_sudo "rm -rf docker-ce"
+    info "getting sources (${latest})...\n"
+    ssh_sudo "rm -rf docker-ce" && \
     ssh_cmd  "git clone -b ${latest} --single-branch --depth 1 https://github.com/docker/docker-ce"
     result=${?}
 fi
 
 if [ ${result} -eq 0 ]; then
-    info "adding user to docker group"
+    info "adding user to docker group\n"
     ssh_sudo "adduser ${SSH_USER} docker"
     result=${?}
 fi
 
 if [ ${result} -eq 0 ]; then
-    info "building docker for ${ARCH}..."
-    ssh_cmd "make -C docker-ce deb DOCKER_BUILD_PKGS=debian-stretch"
+    info "building docker for ${ARCH}...\n"
+    ssh_cmd "make -C docker-ce deb DOCKER_BUILD_PKGS=debian-${DISTRO}"
     result=${?}
 fi
 
@@ -360,6 +373,7 @@ fi
 
 # Use reboot to stop the virtual machine
 if [ -n "${qemu_pid}" ]; then
+    info "stopping build vm...\n"
     ssh_sudo reboot
     wait ${qemu_pid}
 fi
@@ -370,4 +384,3 @@ case ${result} in
 esac
 
 echo "BUILD ${status}"
-exit ${result}

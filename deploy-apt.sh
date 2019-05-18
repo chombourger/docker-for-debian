@@ -10,7 +10,7 @@ if [ ${result} -eq 0 ]; then
     d=${aptdir}/conf
     conf=${d}/distributions
     if [ ! -e ${conf} ]; then
-        info "configuring reprepro..."
+        info "configuring reprepro...\n"
         mkdir -p ${d} && \
         echo "Codename: docker-ce"               >${conf} && \
         echo "Architectures: armhf arm64 amd64" >>${conf} && \
@@ -24,9 +24,16 @@ if [ ${result} -eq 0 ]; then
     d=tmp/work/${ARCH}/docker-ce-${latest}/results
     for deb in ${d}/*.deb; do
         [ -e ${deb} ] || continue
-        info "adding $(basename ${deb}) to the repository..."
-        reprepro -b ${aptdir} -C main includedeb ${DISTRO} ${deb}
+        info "adding $(basename ${deb}) to the repository...\n"
+        reprepro -b ${aptdir} -C main includedeb docker-ce ${deb}
         result=${?}
         [ ${result} -eq 0 ] || break
     done
 fi
+
+case ${result} in
+    0) status="SUCCEESS" ;;
+    *) status="FAILED"   ;;
+esac
+
+echo "DEPLOY ${status}"
