@@ -18,7 +18,7 @@ DRIVE_OPTS=
 SCSI_OPTS=
 NETDEV_OPTS=" \
     -net nic,model=e1000 \
-    -net user,hostfwd=tcp::${SSH_PORT}-:22 \
+    -net user${GUESTFWD}${HOSTFWD} \
 "
 
 #---------------------------------------------------------------------------------------------------
