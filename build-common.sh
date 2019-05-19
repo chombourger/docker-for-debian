@@ -17,16 +17,6 @@ WWW_DIR=/home/www/html
 WWW_PRESEED=http://172.17.0.4/preseed.cfg
 
 #---------------------------------------------------------------------------------------------------
-# SSH settings (required to execute commands within the build vm
-#---------------------------------------------------------------------------------------------------
-
-SSHPASS=mel
-SSH_PORT=9922
-SSH_DELAY=60
-SSH_TRIES=10
-SSH_USER=mel
-
-#---------------------------------------------------------------------------------------------------
 # Disk settings for the build VM
 #---------------------------------------------------------------------------------------------------
 
@@ -142,6 +132,13 @@ cpuopt=""
 [ -n "${CPU}" ] && cpuopt="-cpu ${CPU}"
 
 #---------------------------------------------------------------------------------------------------
+# kernel command line
+#---------------------------------------------------------------------------------------------------
+
+kcmd=""
+[ -n "${CONSOLE}" ] && kcmd="${kcmd} console=${CONSOLE}"
+
+#---------------------------------------------------------------------------------------------------
 # The actual build process
 #---------------------------------------------------------------------------------------------------
 
@@ -195,20 +192,17 @@ fi
 if [ ${result} -eq 0 ]; then
     if [ ! -e ${DISK_PATH}/install.done ]; then
         info "installing Debian for ${ARCH}...\n"
-        bootcmd="root=/dev/ram console=${CONSOLE}"
+        bootcmd="root=/dev/ram${kcmd}"
         bootcmd="${bootcmd} auto=true priority=critical preseed/url=${WWW_PRESEED}"
         ${QEMU} \
-            -smp ${CORES} -M virt ${cpuopt} -m ${MEM} \
+            -smp ${CORES} -M ${MACHINE} ${cpuopt} -m ${MEM} \
             -initrd ${WORKDIR}/${DI_INITRD} -kernel ${WORKDIR}/${DI_KERNEL} \
             -append "${bootcmd}" \
             \
-            -global virtio-blk-device.scsi=off \
-            -device virtio-scsi-device,id=scsi \
-            -drive file=${DISK_PATH}/${DISK_IMAGE},id=rootimg,cache=unsafe,if=none \
-            -device scsi-hd,drive=rootimg \
+            ${SCSI_OPTS} \
+            -drive file=${DISK_PATH}/${DISK_IMAGE}${DRIVE_OPTS},id=rootimg,media=disk \
             \
-            -netdev user,id=unet \
-            -device virtio-net-device,netdev=unet \
+            ${NETDEV_OPTS} \
             \
             -vnc :0 \
             -monitor unix:${DISK_PATH}/monitor.sock,server,nowait \
@@ -229,7 +223,8 @@ if [ ${result} -eq 0 ]; then
         sudo partprobe /dev/nbd0 && \
         mkdir -p ${DISK_PATH}/mnt && \
         sudo mount /dev/nbd0p1 ${DISK_PATH}/mnt && \
-        cp ${DISK_PATH}/mnt/initrd.img ${DISK_PATH}/mnt/vmlinuz ${DISK_PATH}/
+        cp $(find ${DISK_PATH}/mnt -maxdepth 1 -type f -name initrd\*) ${DISK_PATH}/initrd.img && \
+        cp $(find ${DISK_PATH}/mnt -maxdepth 1 -type f -name vmlinuz\*) ${DISK_PATH}/vmlinuz
         result=${?}
     fi
 fi
@@ -259,17 +254,14 @@ qemu_pid=
 if [ ${result} -eq 0 ]; then
     info "booting installed ${ARCH} system...\n"
     ${QEMU} \
-        -smp ${CORES} -M virt ${cpuopt} -m ${MEM} \
+        -smp ${CORES} -M ${MACHINE} ${cpuopt} -m ${MEM} \
         -initrd ${DISK_PATH}/initrd.img -kernel ${DISK_PATH}/vmlinuz \
-        -append "root=/dev/debian-vg/root console=${CONSOLE}" \
+        -append "root=/dev/debian-vg/root${kcmd}" \
         \
-        -global virtio-blk-device.scsi=off \
-        -device virtio-scsi-device,id=scsi \
-        -drive file=${DISK_PATH}/${DISK_IMAGE},id=rootimg,cache=unsafe,if=none \
-        -device scsi-hd,drive=rootimg \
+        ${SCSI_OPTS} \
+        -drive file=${DISK_PATH}/${DISK_IMAGE}${DRIVE_OPTS},id=rootimg,media=disk \
         \
-        -netdev user,id=unet,hostfwd=tcp::${SSH_PORT}-:22 \
-        -device virtio-net-device,netdev=unet \
+        ${NETDEV_OPTS} \
         \
         -vnc :0 \
         -monitor unix:${DISK_PATH}/monitor.sock,server,nowait \
