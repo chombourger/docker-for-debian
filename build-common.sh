@@ -13,7 +13,7 @@
 # Debian installer
 #---------------------------------------------------------------------------------------------------
 
-WWW_DIR=/home/www/html
+WWW_DIR=/var/www/html
 WWW_PRESEED=http://172.17.0.4/preseed.cfg
 
 #---------------------------------------------------------------------------------------------------
@@ -23,15 +23,6 @@ WWW_PRESEED=http://172.17.0.4/preseed.cfg
 DISK_IMAGE=disk.qcow2
 DISK_PATH=tmp/work/${ARCH}/debian-${DISTRO}
 DISK_SIZE=10G
-
-#---------------------------------------------------------------------------------------------------
-# Local settings
-#---------------------------------------------------------------------------------------------------
-
-if [ -f local.conf ]; then
-    info "loading local.conf"
-    source local.conf
-fi
 
 #---------------------------------------------------------------------------------------------------
 # Utility functions
@@ -125,6 +116,15 @@ install_build_host_deps() {
 }
 
 #---------------------------------------------------------------------------------------------------
+# Local settings
+#---------------------------------------------------------------------------------------------------
+
+if [ -f local.conf ]; then
+    info "loading local.conf"
+    source local.conf
+fi
+
+#---------------------------------------------------------------------------------------------------
 # QEMU command line
 #---------------------------------------------------------------------------------------------------
 
@@ -174,7 +174,13 @@ fi
 # Copy preseed file to local web server
 if [ ${result} -eq 0 ]; then
     info "copying preseed to ${WWW_DIR}\n"
-    sudo install -m 644 preseed.cfg ${WWW_DIR}/
+    cat preseed.cfg \
+        | HTTP_PROXY="${HTTP_PROXY}" \
+          SSH_PASS="${SSHPASS}" \
+          SSH_USER="${SSH_USER}" \
+          envsubst \
+        | sudo tee ${WWW_DIR}/preseed.cfg \
+        > /dev/null
     result=${?}
 fi
 
