@@ -6,7 +6,9 @@
 aptdir=tmp/deploy/docker-ce
 
 # Create configuration file for reprepro
-if [ ${result} -eq 0 ]; then
+group "apt"
+task "setup" "configuring reprepro..."
+begin
     d=${aptdir}/conf
     conf=${d}/distributions
     if [ ! -e ${conf} ]; then
@@ -17,21 +19,22 @@ if [ ${result} -eq 0 ]; then
         echo "Components: main"                 >>${conf}
         result=${?}
     fi
-fi
+end
 
 # Add binary packages to the repository
-if [ ${result} -eq 0 ]; then
+task "deploy" "adding created packages to the repository..."
+begin
     d=tmp/work/${ARCH}/docker-ce-${latest}/results
     for deb in ${d}/*.deb; do
         [ -e ${deb} ] || continue
-        info "adding $(basename ${deb}) to the repository...\n"
         reprepro -b ${aptdir} -C main includedeb docker-ce ${deb}
         result=${?}
         [ ${result} -eq 0 ] || break
     done
-fi
+    [ ${result} -eq 0 ]
+end
 
-case ${result} in
+case ${task_result} in
     0) status="SUCCEESS" ;;
     *) status="FAILED"   ;;
 esac

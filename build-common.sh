@@ -9,6 +9,8 @@
 # the build vm and built using the provided makefile.
 #---------------------------------------------------------------------------------------------------
 
+shopt -s expand_aliases
+
 #---------------------------------------------------------------------------------------------------
 # Debian installer
 #---------------------------------------------------------------------------------------------------
@@ -62,7 +64,6 @@ ssh_check() {
 ssh_wait() {
     local result counter
 
-
     counter=${SSH_DELAY}
     while [ ${counter} -gt 0 ]; do
         info "waiting for ssh server to be up..."
@@ -115,6 +116,95 @@ install_build_host_deps() {
         wget
 }
 
+COLOR_NC='\e[0m' # No Color
+COLOR_WHITE='\e[1;37m'
+COLOR_BLACK='\e[0;30m'
+COLOR_BLUE='\e[0;34m'
+COLOR_LIGHT_BLUE='\e[1;34m'
+COLOR_GREEN='\e[0;32m'
+COLOR_LIGHT_GREEN='\e[1;32m'
+COLOR_CYAN='\e[0;36m'
+COLOR_LIGHT_CYAN='\e[1;36m'
+COLOR_RED='\e[0;31m'
+COLOR_LIGHT_RED='\e[1;31m'
+COLOR_PURPLE='\e[0;35m'
+COLOR_LIGHT_PURPLE='\e[1;35m'
+COLOR_BROWN='\e[0;33m'
+COLOR_YELLOW='\e[1;33m'
+COLOR_GRAY='\e[0;30m'
+COLOR_LIGHT_GRAY='\e[0;37m'
+
+task_name=
+task_descr=
+task_result=
+failed_task=
+
+alias check='if [ ${task_result} -eq 0 ]; then if _check; then true'
+alias starting='echo -en "\r${COLOR_BROWN}[RUNNING]${COLOR_NC} ${task_descr}"'
+alias success='echo -en "\r${COLOR_GREEN}[SUCCESS]${COLOR_NC} ${task_descr}"'
+alias failed='echo -en "\r${COLOR_RED}[FAILED ]${COLOR_NC} ${task_descr}"'
+alias begin='check; _begin'
+alias end='task_result=${?}; _end; fi; fi'
+
+group() {
+    task_group="${1}"
+    WORKDIR=tmp/work/${ARCH}/${task_group}
+    mkdir -p ${WORKDIR}/logs ${WORKDIR}/stamps
+}
+
+task() {
+    task_name="${1}"
+    task_descr="${2:-${task_name}}"
+    task_stamp="${3:-1}"
+    task_log=${WORKDIR}/logs/log.do_${task_name}.${$}
+    task_result=${task_result:-0}
+}
+
+_begin() {
+    starting
+    task_start=${SECONDS}
+
+    touch ${task_log}
+    rm -f ${WORKDIR}/logs/log.do_${task_name}
+    ln -s $(basename ${task_log}) ${WORKDIR}/logs/log.do_${task_name}
+
+    exec 8>&1 9>&2
+    exec >${task_log} 2>&1
+}
+
+_end() {
+    exec 1>&8 2>&9
+    task_end=${SECONDS}
+    task_duration=$((${task_end} - ${task_start}))
+
+    if [ ${task_duration} -ge 60 ]; then
+        units="minutes"
+        task_duration=$((${task_duration} / 60))
+    else
+        units="seconds"
+    fi
+
+    if [ ${task_result} -eq 0 ]; then
+        touch ${WORKDIR}/stamps/${task_name}.done
+        success
+        echo " (took ${task_duration} ${units})"
+    else
+        failed
+        echo -e " (failed after ${task_duration} ${units})${COLOR_RED}"
+        tail ${task_log}
+        echo -e "${COLOR_NC}(full log can be found in ${task_log})" >&2
+        failed_task="${task_name}"
+    fi
+}
+
+_check() {
+    local _do_task
+
+    [ ${task_stamp} -eq 0 ] || [ ! -f ${WORKDIR}/stamps/${task_name}.done ]
+    _do_task=${?}
+    return ${_do_task}
+}
+
 #---------------------------------------------------------------------------------------------------
 # Local settings
 #---------------------------------------------------------------------------------------------------
@@ -142,23 +232,34 @@ kcmd=""
 # The actual build process
 #---------------------------------------------------------------------------------------------------
 
-result=0
+group "setup"
+task  "hostdeps" "installing host dependencies..."
+begin
+    install_build_host_deps
+end
 
-info "installing host dependencies\n"
-install_build_host_deps; result=${?}
-
-if [ ${result} -eq 0 ]; then
-    info "checking latest docker-ce build...\n"
+task "upstreamcheck" "checking latest docker-ce build..." "0"
+begin
     latest=$(curl -s ${DOCKER_REPO}/releases/latest|sed -e 's,.*<a href=",,g'|cut -d '"' -f1)
     latest=$(basename ${latest})
     info "upstream version is ${latest}\n"
-fi
+end
 
-# work directory for the installer
-D=$(echo ${DEBIAN_VERSION}|tr '[:upper:]' '[:lower:]')-installer
-WORKDIR=tmp/work/${ARCH}/${D}
+# Copy preseed file to local web server
+task "copypreseed" "copying preseed to ${WWW_DIR}..."
+begin
+    cat preseed.cfg \
+        | HTTP_PROXY="${HTTP_PROXY}" \
+          SSH_PASS="${SSHPASS}" \
+          SSH_USER="${SSH_USER}" \
+          envsubst \
+        | sudo tee ${WWW_DIR}/preseed.cfg \
+        > /dev/null
+end
 
-if [ ${result} -eq 0 ]; then
+group "$(echo ${DEBIAN_VERSION}|tr '[:upper:]' '[:lower:]')-installer"
+task  "fetch" "getting ${ARCH} kernel and ramdisk..."
+begin
     if [ ! -e ${WORKDIR}/${DI_INITRD} ] || [ ! -e ${WORKDIR}/${DI_KERNEL} ]; then
         info "getting ${ARCH} kernel and ramdisk\n"
         url=${DEBIAN_BASE_URL}/${DEBIAN_VERSION}/${DI_PATH}
@@ -167,73 +268,47 @@ if [ ${result} -eq 0 ]; then
         wget -qc ${url}/${DI_INITRD} && \
         wget -qc ${url}/${DI_KERNEL} && \
         popd >/dev/null
-        result=${?}
     fi
-fi
-
-# Copy preseed file to local web server
-if [ ${result} -eq 0 ]; then
-    info "copying preseed to ${WWW_DIR}\n"
-    cat preseed.cfg \
-        | HTTP_PROXY="${HTTP_PROXY}" \
-          SSH_PASS="${SSHPASS}" \
-          SSH_USER="${SSH_USER}" \
-          envsubst \
-        | sudo tee ${WWW_DIR}/preseed.cfg \
-        > /dev/null
-    result=${?}
-fi
+end
 
 # Create (empty) disk image
-if [ ${result} -eq 0 ]; then
-    if [ ! -e ${DISK_PATH}/${DISK_IMAGE} ]; then
-        info "creating ${DISK_SIZE} disk image\n"
-        mkdir -p ${DISK_PATH} && \
-        qemu-img create -f qcow2 ${DISK_PATH}/${DISK_IMAGE} ${DISK_SIZE} >/dev/null
-        result=${?}
-    fi
-fi
+task "diskimage" "creating ${DISK_SIZE} disk image..."
+begin
+    mkdir -p ${DISK_PATH} && \
+    qemu-img create -f qcow2 ${DISK_PATH}/${DISK_IMAGE} ${DISK_SIZE} >/dev/null
+end
 
 # Install Debian to the disk image
-if [ ${result} -eq 0 ]; then
-    if [ ! -e ${DISK_PATH}/install.done ]; then
-        info "installing Debian for ${ARCH}...\n"
-        bootcmd="root=/dev/ram${kcmd}"
-        bootcmd="${bootcmd} auto=true priority=critical preseed/url=${WWW_PRESEED}"
-        ${QEMU} \
-            -smp ${CORES} -M ${MACHINE} ${cpuopt} -m ${MEM} \
-            -initrd ${WORKDIR}/${DI_INITRD} -kernel ${WORKDIR}/${DI_KERNEL} \
-            -append "${bootcmd}" \
-            \
-            ${SCSI_OPTS} \
-            -drive file=${DISK_PATH}/${DISK_IMAGE}${DRIVE_OPTS},id=rootimg,media=disk \
-            \
-            ${NETDEV_OPTS} \
-            \
-            -vnc :0 \
-            -monitor unix:${DISK_PATH}/monitor.sock,server,nowait \
-            -no-reboot
-        result=${?}
-        if [ ${result} -eq 0 ]; then
-            touch ${DISK_PATH}/install.done
-        fi
-    fi
-fi
+task "install" "installing Debian for ${ARCH}..."
+begin
+    bootcmd="root=/dev/ram${kcmd}"
+    bootcmd="${bootcmd} auto=true priority=critical preseed/url=${WWW_PRESEED}"
+    ${QEMU} \
+        -smp ${CORES} -M ${MACHINE} ${cpuopt} -m ${MEM} \
+        -initrd ${WORKDIR}/${DI_INITRD} -kernel ${WORKDIR}/${DI_KERNEL} \
+        -append "${bootcmd}" \
+        \
+        ${SCSI_OPTS} \
+        -drive file=${DISK_PATH}/${DISK_IMAGE}${DRIVE_OPTS},id=rootimg,media=disk \
+        \
+        ${NETDEV_OPTS} \
+        \
+        -vnc :0 \
+        -monitor unix:${DISK_PATH}/monitor.sock,server,nowait \
+        -no-reboot
+end
 
 # Extract kernel/initrd from disk
-if [ ${result} -eq 0 ]; then
-    if [ ! -e ${DISK_PATH}/initrd.img ] || [ ! -e ${DISK_PATH}/vmlinuz ]; then
-        info "extracting installed kernel and ramdisk\n"
-        sudo modprobe nbd max_part=8 && \
-        sudo qemu-nbd --connect=/dev/nbd0 ${DISK_PATH}/${DISK_IMAGE} && \
-        sudo partprobe /dev/nbd0 && \
-        mkdir -p ${DISK_PATH}/mnt && \
-        sudo mount /dev/nbd0p1 ${DISK_PATH}/mnt && \
-        cp $(find ${DISK_PATH}/mnt -maxdepth 1 -type f -name initrd\*) ${DISK_PATH}/initrd.img && \
-        cp $(find ${DISK_PATH}/mnt -maxdepth 1 -type f -name vmlinuz\*) ${DISK_PATH}/vmlinuz
-        result=${?}
-    fi
-fi
+task "extract" "extracting installed kernel and ramdisk..."
+begin
+    sudo modprobe nbd max_part=8 && \
+    sudo qemu-nbd --connect=/dev/nbd0 ${DISK_PATH}/${DISK_IMAGE} && \
+    sudo partprobe /dev/nbd0 && \
+    mkdir -p ${DISK_PATH}/mnt && \
+    sudo mount /dev/nbd0p1 ${DISK_PATH}/mnt && \
+    cp $(find ${DISK_PATH}/mnt -maxdepth 1 -type f -name initrd\*) ${DISK_PATH}/initrd.img && \
+    cp $(find ${DISK_PATH}/mnt -maxdepth 1 -type f -name vmlinuz\*) ${DISK_PATH}/vmlinuz
+end
 
 # Flush data and release I/O devices
 sync
@@ -246,19 +321,11 @@ if sudo nbd-client -c /dev/nbd0; then
     sudo nbd-client -d /dev/nbd0
 fi
 
-# work directory for our docker-ce build
-D=docker-ce-${latest}
-WORKDIR=tmp/work/${ARCH}/${D}
-
-if [ ${result} -eq 0 ]; then
-    mkdir -p ${WORKDIR}
-    result=${?}
-fi
-
 # Boot installed system
 qemu_pid=
-if [ ${result} -eq 0 ]; then
-    info "booting installed ${ARCH} system...\n"
+group "docker-ce-${latest}"
+task "boot" "starting ${ARCH} vm..." "0"
+begin
     ${QEMU} \
         -smp ${CORES} -M ${MACHINE} ${cpuopt} -m ${MEM} \
         -initrd ${DISK_PATH}/initrd.img -kernel ${DISK_PATH}/vmlinuz \
@@ -274,100 +341,92 @@ if [ ${result} -eq 0 ]; then
         -no-reboot \
        &
     qemu_pid=${!}
-fi
+end
 
 # Wait for system to be up
 if [ -n "${qemu_pid}" ]; then
-    ssh_wait; result=${?}
-    if [ ${result} -ne 0 ]; then
+    ssh_wait; task_result=${?}
+    if [ ${task_result} -ne 0 ]; then
         sleep 60
         kill -TERM ${qemu_pid}
         qemu_pid=
     fi
 else
-    result=1
+    task_result=1
 fi
 
-if [ ${result} -eq 0 ]; then
-    info "install packages to support https package feeds...\n"
+task "setup" "installing packages to support https package feeds..."
+begin
     ssh_sudo apt-get -qqy install \
         apt-transport-https \
         ca-certificates \
         curl \
         gnupg2 \
         software-properties-common
-    result=${?}
-fi
+end
 
-if [ ${result} -eq 0 ]; then
-    info "get docker’s official GPG key\n"
+task "getgpg" "get docker’s official GPG key..."
+begin
     ssh_cmd curl -fsSL -o docker.gpg https://download.docker.com/linux/debian/gpg
-    result=${?}
-fi
+end
 
-if [ ${result} -eq 0 ]; then
-    info "adding docker's key...\n"
+task "addgpg" "adding docker's key..."
+begin
     ssh_sudo 'apt-key add docker.gpg >/dev/null'
-    result=${?}
-fi
+end
 
-if [ ${result} -eq 0 ]; then
-    info "adding docker's package feed...\n"
+task "addsrc" "adding docker's package feed..."
+begin
     ssh_cmd  "echo deb https://download.docker.com/linux/debian ${DISTRO} stable>docker.list" && \
     ssh_sudo "cp docker.list /etc/apt/sources.list.d/"
-    result=${?}
-fi
+end
 
-if [ ${result} -eq 0 ]; then
-    info "updating package database...\n"
+task "aptupd" "updating package database..."
+begin
     ssh_sudo "apt-get -qqy update"
-    result=${?}
-fi
+end
 
-if [ ${result} -eq 0 ]; then
-    info "installing docker-ce...\n"
+task "install" "installing docker-ce..."
+begin
     ssh_sudo "apt-get -qqy install docker-ce docker-ce-cli containerd.io ${EXTRA_PACKAGES}"
-    result=${?}
-fi
+end
 
-if [ ${result} -eq 0 ]; then
-    info "copying docker's daemon configuration file...\n"
+task "config" "copying docker's daemon configuration file..."
+begin
     ssh_copy_to daemon.json && \
     ssh_sudo 'cp daemon.json /etc/docker/'
-    result=${?}
-fi
+end
 
-if [ ${result} -eq 0 ]; then
-    info "restarting docker...\n"
+task "restart" "restarting docker..."
+begin
     ssh_sudo 'systemctl restart docker'
-    result=${?}
-fi
+end
 
-if [ ${result} -eq 0 ]; then
-    info "getting sources (${latest})...\n"
+task "fetch" "getting sources (${latest})..."
+begin
     ssh_sudo "rm -rf docker-ce" && \
     ssh_cmd  "git clone -b ${latest} --single-branch --depth 1 https://github.com/docker/docker-ce"
-    result=${?}
-fi
+end
 
-if [ ${result} -eq 0 ]; then
-    info "adding user to docker group\n"
+task "adduser" "adding user to docker group..."
+begin
     ssh_sudo "adduser ${SSH_USER} docker"
-    result=${?}
-fi
+end
 
-if [ ${result} -eq 0 ]; then
-    info "building docker for ${ARCH}...\n"
+check_stamp=1
+task "build" "building docker for ${ARCH}..."
+begin
+    check_stamp=0
     ssh_cmd "make -C docker-ce deb DOCKER_BUILD_PKGS=debian-${DISTRO}"
-    result=${?}
-fi
+end
 
-if [ ${result} -eq 0 ]; then
-    mkdir -p ${WORKDIR}/results
+task "copy" "getting deb packages from build vm..." "${check_stamp}"
+begin
+    mkdir -p ${WORKDIR}/results && \
     ssh_copy_from \
         docker-ce/components/packaging/deb/debbuild/debian-*/*.deb \
         ${WORKDIR}/results
-fi
+end
 
 # Use reboot to stop the virtual machine
 if [ -n "${qemu_pid}" ]; then
@@ -376,9 +435,9 @@ if [ -n "${qemu_pid}" ]; then
     wait ${qemu_pid}
 fi
 
-case ${result} in
-    0) status="SUCCEESS" ;;
-    *) status="FAILED"   ;;
+case ${task_result} in
+    0) status="SUCCEESS"                ;;
+    *) status="FAILED (${failed_task})" ;;
 esac
 
 echo "BUILD ${status}"
