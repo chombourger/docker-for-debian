@@ -23,6 +23,7 @@ end
 
 # Add binary packages to the repository
 task "deploy" "adding created packages to the repository..."
+deps "docker-ce-${latest}:copy"
 begin
     d=tmp/work/${ARCH}/docker-ce-${latest}/results
     for deb in ${d}/*.deb; do
@@ -33,10 +34,3 @@ begin
     done
     [ ${result} -eq 0 ]
 end
-
-case ${task_result} in
-    0) status="SUCCEESS" ;;
-    *) status="FAILED"   ;;
-esac
-
-echo "DEPLOY ${status}"

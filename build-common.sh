@@ -66,22 +66,22 @@ ssh_wait() {
 
     counter=${SSH_DELAY}
     while [ ${counter} -gt 0 ]; do
-        info "waiting for ssh server to be up..."
+        echo -en "\r${COLOR_BROWN}[WAITING]${COLOR_NC} ${counter} seconds before online check..."
         sleep 1
         counter=$((${counter} - 1))
     done
 
     counter=${SSH_TRIES}
     while [ ${counter} -gt 0 ]; do
-        info "trying to connect to build vm via ssh..."
+        echo -en "\r${COLOR_BROWN}[ INFO  ]${COLOR_NC} trying to connect to build vm via ssh..."
         ssh_check; result=${?}
         [ ${result} -eq 0 ] && break
         counter=$((${counter} - 1))
     done
 
     case ${result} in
-        0) echo "ok!"      ;;
-        *) echo "timeout!" ;;
+        0) echo -e " ${COLOR_GREEN}ok!${COLOR_NC}"    ;;
+        *) echo -e " ${COLOR_RED}timeout!${COLOR_NC}" ;;
     esac
     return ${result}
 }
@@ -134,12 +134,13 @@ COLOR_YELLOW='\e[1;33m'
 COLOR_GRAY='\e[0;30m'
 COLOR_LIGHT_GRAY='\e[0;37m'
 
+task_abort=0
 task_name=
 task_descr=
 task_result=
 failed_task=
 
-alias check='if [ ${task_result} -eq 0 ]; then if _check; then true'
+alias check='if [ ${task_abort} -eq 0 ]; then if _check; then true'
 alias starting='echo -en "\r${COLOR_BROWN}[RUNNING]${COLOR_NC} ${task_descr}"'
 alias success='echo -en "\r${COLOR_GREEN}[SUCCESS]${COLOR_NC} ${task_descr}"'
 alias failed='echo -en "\r${COLOR_RED}[FAILED ]${COLOR_NC} ${task_descr}"'
@@ -154,10 +155,15 @@ group() {
 
 task() {
     task_name="${1}"
+    task_deps=""
     task_descr="${2:-${task_name}}"
-    task_stamp="${3:-1}"
+    task_force="${3:-0}"
     task_log=${WORKDIR}/logs/log.do_${task_name}.${$}
     task_result=${task_result:-0}
+}
+
+deps() {
+    task_deps="${*}"
 }
 
 _begin() {
@@ -176,6 +182,8 @@ _end() {
     exec 1>&8 2>&9
     task_end=${SECONDS}
     task_duration=$((${task_end} - ${task_start}))
+
+    [ ${task_result} -eq 0 ] || task_abort=1
 
     if [ ${task_duration} -ge 60 ]; then
         units="minutes"
@@ -197,12 +205,53 @@ _end() {
     fi
 }
 
-_check() {
-    local _do_task
+_stamp() {
+    local _group
+    local _task
 
-    [ ${task_stamp} -eq 0 ] || [ ! -f ${WORKDIR}/stamps/${task_name}.done ]
-    _do_task=${?}
-    return ${_do_task}
+    case "${1}" in
+        *:*) _group=${1/:*/}      ; _task=${1/*:/} ;;
+          *) _group=${task_group} ; _task=${1}     ;;
+    esac
+
+    echo "tmp/work/${ARCH}/${_group}/stamps/${_task}.done"
+}
+
+_check() {
+    local _dep
+    local _skip_task=0
+    local _dep_newer=0
+    local _dep_stamp
+    local _task_stamp
+
+    _skip_task=1
+    _task_stamp=$(_stamp ${task_name})
+    if [ -n "${task_deps}" ]; then
+        for _dep in ${task_deps}; do
+            _dep_stamp=$(_stamp ${_dep})
+            if [ ! -e ${_dep_stamp} ]; then
+                echo -en "\r${COLOR_RED}[MISSING]${COLOR_NC} ${task_name} task depends on ${_dep}!\n" >&2
+                task_abort=1
+            elif [ -f ${_task_stamp} ] && [ ${_dep_stamp} -nt ${_task_stamp} ]; then
+                echo -en "\r${COLOR_BROWN}[ INFO  ]${COLOR_NC} ${_dep} newer than ${task_name}\n" >&2
+                _dep_newer=1
+                _skip_task=0
+            fi
+        done
+    fi
+
+    if [ ${task_force} -eq 1 ] && [ ${task_abort} -eq 0 ]; then
+        echo -en "\r${COLOR_BROWN}[ INFO  ]${COLOR_NC} forced run of the '${task_name}' task\n" >&2
+        _skip_task=0
+    fi
+
+    if [ ${_skip_task} -eq 1 ]; then
+        if [ ! -f $(_stamp ${task_name}) ]; then
+            _skip_task=0
+        fi
+    fi
+
+    return ${_skip_task}
 }
 
 #---------------------------------------------------------------------------------------------------
@@ -238,7 +287,7 @@ begin
     install_build_host_deps
 end
 
-task "upstreamcheck" "checking latest docker-ce build..." "0"
+task "upstreamcheck" "checking latest docker-ce build..." "1"
 begin
     latest=$(curl -s ${DOCKER_REPO}/releases/latest|sed -e 's,.*<a href=",,g'|cut -d '"' -f1)
     latest=$(basename ${latest})
@@ -324,7 +373,7 @@ fi
 # Boot installed system
 qemu_pid=
 group "docker-ce-${latest}"
-task "boot" "starting ${ARCH} vm..." "0"
+task "boot" "starting ${ARCH} vm..." "1"
 begin
     ${QEMU} \
         -smp ${CORES} -M ${MACHINE} ${cpuopt} -m ${MEM} \
@@ -413,14 +462,14 @@ begin
     ssh_sudo "adduser ${SSH_USER} docker"
 end
 
-check_stamp=1
 task "build" "building docker for ${ARCH}..."
+deps "fetch"
 begin
-    check_stamp=0
     ssh_cmd "make -C docker-ce deb DOCKER_BUILD_PKGS=debian-${DISTRO}"
 end
 
-task "copy" "getting deb packages from build vm..." "${check_stamp}"
+task "copy" "getting deb packages from build vm..."
+deps "build"
 begin
     mkdir -p ${WORKDIR}/results && \
     ssh_copy_from \
@@ -430,14 +479,7 @@ end
 
 # Use reboot to stop the virtual machine
 if [ -n "${qemu_pid}" ]; then
-    info "stopping build vm...\n"
+    echo -e "${COLOR_BROWN}[ INFO  ]${COLOR_NC} stopping build vm..."
     ssh_sudo reboot
     wait ${qemu_pid}
 fi
-
-case ${task_result} in
-    0) status="SUCCEESS"                ;;
-    *) status="FAILED (${failed_task})" ;;
-esac
-
-echo "BUILD ${status}"
